@@ -6,7 +6,7 @@ from typing import Literal
 from google import genai
 from groq import Groq
 import threading
-from flask import Flask, session, redirect, url_for, request, render_template_string
+from flask import Flask, redirect, url_for, request, render_template_string
 
 # Setup Discord Bot
 intents = discord.Intents.default()
@@ -114,11 +114,11 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# ----------------- CARI-STYLE UTILITY & MOD COMMANDS -----------------
+# ----------------- UTILITY & MOD COMMANDS -----------------
 @bot.tree.command(name="poll", description="Create a community poll with reactions.")
 @app_commands.describe(question="The question for the poll")
 async def poll_cmd(interaction: discord.Interaction, question: str):
-    embed = discord.Embed(title="📊 Server Poll", description=question, color=discord.Color.blue())
+    embed = discord.Embed(title="📊 Server Poll", description=question, color=discord.Color.from_rgb(114, 137, 218))
     embed.set_footer(text=f"Created by {interaction.user.name}")
     await interaction.response.send_message(embed=embed)
     message = await interaction.original_response()
@@ -157,53 +157,135 @@ async def online_cmd(interaction: discord.Interaction):
     await bot.change_presence(status=discord.Status.online)
     await interaction.response.send_message("🟢 Bot is now online!", ephemeral=True)
 
-# ----------------- FLASK OWNER-ONLY WEB DASHBOARD -----------------
+# ----------------- CARL-BOT STYLE FLASK WEB DASHBOARD -----------------
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "super-secret-key-change-me")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "super-secret-key")
 
-DASHBOARD_HTML = """
+CARL_STYLE_HTML = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Server Owner Dashboard</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Serenity Script Hub - Control Panel</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 40px; text-align: center; }
-        .container { max-width: 600px; margin: auto; background: #1e293b; padding: 40px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
-        h1 { color: #38bdf8; margin-bottom: 10px; }
-        .badge { background: #0284c7; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
-        .setting-box { background: #334155; margin: 15px 0; padding: 15px 20px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
-        button { background: #0ea5e9; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #0284c7; }
-        .off { background: #ef4444; }
-        .off:hover { background: #dc2626; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #1e1b4b 0%, #311042 50%, #1e1b4b 100%);
+            color: #f8fafc;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 50px;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .logo { font-size: 22px; font-weight: bold; color: #a855f7; display: flex; align-items: center; gap: 10px; }
+        .hero {
+            text-align: center;
+            padding: 80px 20px 40px 20px;
+        }
+        .hero h1 {
+            font-size: 48px;
+            margin-bottom: 15px;
+            background: linear-gradient(to right, #c084fc, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .hero p { color: #cbd5e1; font-size: 18px; margin-bottom: 30px; }
+        .main-container {
+            max-width: 900px;
+            margin: 0 auto 60px auto;
+            padding: 20px;
+        }
+        .section-title { font-size: 28px; text-align: center; margin-bottom: 30px; font-weight: bold; }
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 20px;
+        }
+        .card {
+            background: rgba(30, 41, 59, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 16px;
+            padding: 25px;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .card h3 { margin-top: 0; color: #e2e8f0; font-size: 20px; display: flex; align-items: center; gap: 10px; }
+        .card p { color: #94a3b8; font-size: 14px; line-height: 1.5; }
+        .toggle-btn {
+            background: #a855f7;
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+            transition: background 0.2s;
+            width: 100%;
+            margin-top: 15px;
+        }
+        .toggle-btn:hover { background: #9333ea; }
+        .toggle-btn.off { background: #ef4444; }
+        .toggle-btn.off:hover { background: #dc2626; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🛡️ Owner Control Panel</h1>
-        <p>Manage your bot features dynamically like advanced management dashboards.</p>
-        <span class="badge">Restricted: Server Owner Access Only</span>
-        
-        <hr style="border: 0; border-top: 1px solid #475569; margin: 25px 0;">
+    <header>
+        <div class="logo">🛡️ Serenity Bot Dashboard</div>
+        <div style="font-size: 14px; color: #cbd5e1;">Owner Control Mode</div>
+    </header>
 
+    <div class="hero">
+        <h1>Supercharge Your Discord</h1>
+        <p>An advanced multi-provider AI, moderation, and utility management control panel.</p>
+    </div>
+
+    <div class="main-container">
+        <div class="section-title">Active Server Modules</div>
+        
         <form method="POST" action="/update">
-            <div class="setting-box">
-                <span>🤖 AI Auto-Responder</span>
-                <button name="toggle" value="auto_responder" class="{{ 'off' if not settings.auto_responder else '' }}">
-                    {{ 'Enabled' if settings.auto_responder else 'Disabled' }}
-                </button>
-            </div>
-            <div class="setting-box">
-                <span>🛡️ Moderation Logging</span>
-                <button name="toggle" value="moderation_logging" class="{{ 'off' if not settings.moderation_logging else '' }}">
-                    {{ 'Enabled' if settings.moderation_logging else 'Disabled' }}
-                </button>
-            </div>
-            <div class="setting-box">
-                <span>👋 Welcome Messages</span>
-                <button name="toggle" value="welcome_messages" class="{{ 'off' if not settings.welcome_messages else '' }}">
-                    {{ 'Enabled' if settings.welcome_messages else 'Disabled' }}
-                </button>
+            <div class="cards-grid">
+                <div class="card">
+                    <div>
+                        <h3>🤖 AI Auto-Responder</h3>
+                        <p>Allows the bot to respond contextually when mentioned in chat utilizing intelligent key rotation.</p>
+                    </div>
+                    <button name="toggle" value="auto_responder" class="toggle-btn {{ 'off' if not settings.auto_responder else '' }}">
+                        {{ 'Enabled' if settings.auto_responder else 'Disabled' }}
+                    </button>
+                </div>
+
+                <div class="card">
+                    <div>
+                        <h3>🛡️ Moderation Logging</h3>
+                        <p>Tracks administrative actions like bans, kicks, and monitors secure command executions.</p>
+                    </div>
+                    <button name="toggle" value="moderation_logging" class="toggle-btn {{ 'off' if not settings.moderation_logging else '' }}">
+                        {{ 'Enabled' if settings.moderation_logging else 'Disabled' }}
+                    </button>
+                </div>
+
+                <div class="card">
+                    <div>
+                        <h3>👋 Welcome & Staff Panel</h3>
+                        <p>Manages member notifications, application response tracking, and automated announcements.</p>
+                    </div>
+                    <button name="toggle" value="welcome_messages" class="toggle-btn {{ 'off' if not settings.welcome_messages else '' }}">
+                        {{ 'Enabled' if settings.welcome_messages else 'Disabled' }}
+                    </button>
+                </div>
             </div>
         </form>
     </div>
@@ -213,7 +295,7 @@ DASHBOARD_HTML = """
 
 @app.route('/')
 def home():
-    return render_template_string(DASHBOARD_HTML, settings=bot_settings)
+    return render_template_string(CARL_STYLE_HTML, settings=bot_settings)
 
 @app.route('/update', methods=['POST'])
 def update_setting():
