@@ -6,27 +6,30 @@ from typing import Literal
 from google import genai
 from groq import Groq
 import threading
-from flask import Flask, redirect, url_for, request, render_template_string
+import requests
+from flask import Flask, redirect, url_for, request, render_template_string, session
 
 # Setup Discord Bot
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Set your Discord User ID here (or via Render Environment Variables)
-OWNER_ID = int(os.getenv("OWNER_ID", "YOUR_DISCORD_USER_ID_HERE"))
+# OAuth2 Credentials from Environment Variables
+CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "YOUR_DISCORD_CLIENT_ID")
+CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "YOUR_DISCORD_CLIENT_SECRET")
+REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "https://YOUR_RENDER_URL.onrender.com/callback")
 
-# Target Channel ID for Staff Results
-STAFF_RESULTS_CHANNEL_ID = 1546885221071200276
+# Per-server settings storage (In production, replace this with a database like PostgreSQL/SQLite)
+server_settings = {}
 
-# State variables & Dynamic Server Settings
-is_offline_mode = False
-channel_chats = {}
-bot_settings = {
-    "auto_responder": True,
-    "moderation_logging": True,
-    "welcome_messages": True
-}
+def get_server_config(guild_id):
+    if guild_id not in server_settings:
+        server_settings[guild_id] = {
+            "auto_responder": True,
+            "moderation_logging": True,
+            "welcome_messages": True
+        }
+    return server_settings[guild_id]
 
 def ask_ai(channel_id, prompt):
     last_error = None
@@ -36,19 +39,14 @@ def ask_ai(channel_id, prompt):
     for g_key in gemini_keys:
         try:
             client = genai.Client(api_key=g_key)
-            if channel_id not in channel_chats:
-                channel_chats[channel_id] = client.chats.create(
-                    model="gemini-2.0-flash",
-                    config={
-                        "system_instruction": "You are a helpful, friendly Discord AI assistant with conversation memory."
-                    }
-                )
-            response = channel_chats[channel_id].send_message(prompt)
+            # Simple stateless or basic handling
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
             return response.text
         except Exception as e:
             last_error = e
-            if channel_id in channel_chats:
-                del channel_chats[channel_id]
             continue
 
     for gr_key in groq_keys:
@@ -66,7 +64,7 @@ def ask_ai(channel_id, prompt):
             last_error = e
             continue
 
-    raise Exception(f"All 4 AI keys failed. Last error: {last_error}")
+    raise Exception(f"All AI keys failed. Last error: {last_error}")
 
 @bot.event
 async def on_ready():
@@ -77,12 +75,13 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# ----------------- AI CHAT & MENTIONS -----------------
+# ----------------- DISCORD COMMANDS -----------------
 @bot.tree.command(name="chat", description="Ask the AI anything!")
 @app_commands.describe(prompt="What would you like to ask?")
 async def chat(interaction: discord.Interaction, prompt: str):
-    if is_offline_mode and interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("The bot is currently offline.", ephemeral=True)
+    config = get_server_config(str(interaction.guild_id))
+    if not config["auto_responder"]:
+        await interaction.response.send_message("❌ AI Auto-Responder is disabled for this server via the web panel.", ephemeral=True)
         return
 
     await interaction.response.defer()
@@ -92,33 +91,10 @@ async def chat(interaction: discord.Interaction, prompt: str):
     except Exception as e:
         await interaction.followup.send(f"❌ **Debug Error:** {e}")
 
-@bot.event
-async def on_message(message):
-    if message.author == bot.user or not bot_settings["auto_responder"]:
-        return
-    if is_offline_mode and message.author.id != OWNER_ID:
-        return
-
-    if bot.user in message.mentions:
-        clean_text = message.content.replace(f"<@{bot.user.id}>", "").strip()
-        if not clean_text:
-            await message.reply("Hey! How can I help you today?")
-            return
-
-        async with message.channel.typing():
-            try:
-                answer_text = ask_ai(message.channel.id, clean_text)
-                await message.reply(answer_text[:1900])
-            except Exception as e:
-                await message.reply(f"❌ **Debug Error:** {e}")
-
-    await bot.process_commands(message)
-
-# ----------------- UTILITY & MOD COMMANDS -----------------
-@bot.tree.command(name="poll", description="Create a community poll with reactions.")
+@bot.tree.command(name="poll", description="Create a community poll.")
 @app_commands.describe(question="The question for the poll")
 async def poll_cmd(interaction: discord.Interaction, question: str):
-    embed = discord.Embed(title="📊 Server Poll", description=question, color=discord.Color.from_rgb(114, 137, 218))
+    embed = discord.Embed(title="📊 Server Poll", description=question, color=discord.Color.blurple())
     embed.set_footer(text=f"Created by {interaction.user.name}")
     await interaction.response.send_message(embed=embed)
     message = await interaction.original_response()
@@ -131,163 +107,119 @@ async def kick_cmd(interaction: discord.Interaction, member: discord.Member, rea
     await member.kick(reason=reason)
     await interaction.response.send_message(f"✅ Kicked {member.mention}", ephemeral=True)
 
-@bot.tree.command(name="ban", description="Ban a member from the server.")
-@app_commands.checks.has_permissions(ban_members=True)
-async def ban_cmd(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    await member.ban(reason=reason)
-    await interaction.response.send_message(f"✅ Banned {member.mention}", ephemeral=True)
-
-@bot.tree.command(name="offline", description="Put the bot into maintenance mode (Owner Only).")
-async def offline_cmd(interaction: discord.Interaction):
-    global is_offline_mode
-    if interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("❌ Unauthorized.", ephemeral=True)
-        return
-    is_offline_mode = True
-    await bot.change_presence(status=discord.Status.invisible)
-    await interaction.response.send_message("🤫 Bot is now offline.", ephemeral=True)
-
-@bot.tree.command(name="online", description="Bring the bot back online (Owner Only).")
-async def online_cmd(interaction: discord.Interaction):
-    global is_offline_mode
-    if interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("❌ Unauthorized.", ephemeral=True)
-        return
-    is_offline_mode = False
-    await bot.change_presence(status=discord.Status.online)
-    await interaction.response.send_message("🟢 Bot is now online!", ephemeral=True)
-
-# ----------------- CARL-BOT STYLE FLASK WEB DASHBOARD -----------------
+# ----------------- PUBLIC FLASK WEBSITE & OAUTH2 -----------------
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "super-secret-key")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "super-secret-oauth-key")
 
-CARL_STYLE_HTML = """
+LANDING_PAGE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Serenity Script Hub - Control Panel</title>
+    <title>Serenity Bot - Multi-Server Management</title>
     <style>
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: linear-gradient(135deg, #1e1b4b 0%, #311042 50%, #1e1b4b 100%);
-            color: #f8fafc;
-            margin: 0;
-            padding: 0;
-            min-height: 100vh;
-        }
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 20px 50px;
-            background: rgba(15, 23, 42, 0.6);
-            backdrop-filter: blur(10px);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        .logo { font-size: 22px; font-weight: bold; color: #a855f7; display: flex; align-items: center; gap: 10px; }
-        .hero {
-            text-align: center;
-            padding: 80px 20px 40px 20px;
-        }
-        .hero h1 {
-            font-size: 48px;
-            margin-bottom: 15px;
-            background: linear-gradient(to right, #c084fc, #f472b6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .hero p { color: #cbd5e1; font-size: 18px; margin-bottom: 30px; }
-        .main-container {
-            max-width: 900px;
-            margin: 0 auto 60px auto;
-            padding: 20px;
-        }
-        .section-title { font-size: 28px; text-align: center; margin-bottom: 30px; font-weight: bold; }
-        .cards-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 20px;
-        }
-        .card {
-            background: rgba(30, 41, 59, 0.7);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 16px;
-            padding: 25px;
-            backdrop-filter: blur(12px);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-        }
-        .card h3 { margin-top: 0; color: #e2e8f0; font-size: 20px; display: flex; align-items: center; gap: 10px; }
-        .card p { color: #94a3b8; font-size: 14px; line-height: 1.5; }
-        .toggle-btn {
-            background: #a855f7;
-            color: white;
-            border: none;
-            padding: 10px 18px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: bold;
-            font-size: 14px;
-            transition: background 0.2s;
-            width: 100%;
-            margin-top: 15px;
-        }
-        .toggle-btn:hover { background: #9333ea; }
-        .toggle-btn.off { background: #ef4444; }
-        .toggle-btn.off:hover { background: #dc2626; }
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 0; text-align: center; }
+        header { display: flex; justify-content: space-between; align-items: center; padding: 20px 50px; background: #1e293b; }
+        .logo { font-size: 22px; font-weight: bold; color: #38bdf8; }
+        .hero { padding: 100px 20px; }
+        h1 { font-size: 50px; color: #f1f5f9; margin-bottom: 10px; }
+        p { color: #94a3b8; font-size: 18px; margin-bottom: 30px; }
+        .btn { background: #5865F2; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; margin: 10px; }
+        .btn:hover { background: #4752C4; }
+        .btn-dashboard { background: #10b981; }
+        .btn-dashboard:hover { background: #059669; }
     </style>
 </head>
 <body>
     <header>
-        <div class="logo">🛡️ Serenity Bot Dashboard</div>
-        <div style="font-size: 14px; color: #cbd5e1;">Owner Control Mode</div>
+        <div class="logo">🤖 Serenity Bot Hub</div>
+        <div>
+            {% if 'user' in session %}
+                <a href="/dashboard" class="btn btn-dashboard">Control Panel</a>
+                <a href="/logout" class="btn" style="background: #ef4444;">Logout</a>
+            {% else %}
+                <a href="/login" class="btn">Login with Discord</a>
+            {% endif %}
+        </div>
     </header>
-
     <div class="hero">
-        <h1>Supercharge Your Discord</h1>
-        <p>An advanced multi-provider AI, moderation, and utility management control panel.</p>
+        <h1>Supercharge Your Discord Server</h1>
+        <p>Advanced AI failover, moderation logs, and custom management features for any community.</p>
+        <a href="https://discord.com/oauth2/authorize?client_id={{ client_id }}&scope=bot+applications.commands&permissions=8" target="_blank" class="btn">Add to Discord</a>
     </div>
+</body>
+</html>
+"""
 
-    <div class="main-container">
-        <div class="section-title">Active Server Modules</div>
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Server Management Dashboard</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 40px; text-align: center; }
+        .container { max-width: 700px; margin: auto; background: #1e293b; padding: 40px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        h1 { color: #38bdf8; }
+        .server-box { background: #334155; margin: 15px 0; padding: 20px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .btn { background: #0ea5e9; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; text-decoration: none; }
+        .btn:hover { background: #0284c7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome, {{ user.username }}! 👋</h1>
+        <p>Select a server where you have administrative privileges to configure features.</p>
+        <hr style="border: 0; border-top: 1px solid #475569; margin: 25px 0;">
         
-        <form method="POST" action="/update">
-            <div class="cards-grid">
-                <div class="card">
-                    <div>
-                        <h3>🤖 AI Auto-Responder</h3>
-                        <p>Allows the bot to respond contextually when mentioned in chat utilizing intelligent key rotation.</p>
-                    </div>
-                    <button name="toggle" value="auto_responder" class="toggle-btn {{ 'off' if not settings.auto_responder else '' }}">
-                        {{ 'Enabled' if settings.auto_responder else 'Disabled' }}
-                    </button>
+        {% for guild in guilds %}
+            {% if (guild.permissions | int) & 0x8 == 0x8 or (guild.permissions | int) & 0x20 == 0x20 %}
+                <div class="server-box">
+                    <span><b>{{ guild.name }}</b></span>
+                    <a href="/manage/{{ guild.id }}" class="btn">Manage Settings</a>
                 </div>
+            {% endif %}
+        {% endfor %}
+        <br>
+        <a href="/" class="btn" style="background: #64748b;">Back to Home</a>
+    </div>
+</body>
+</html>
+"""
 
-                <div class="card">
-                    <div>
-                        <h3>🛡️ Moderation Logging</h3>
-                        <p>Tracks administrative actions like bans, kicks, and monitors secure command executions.</p>
-                    </div>
-                    <button name="toggle" value="moderation_logging" class="toggle-btn {{ 'off' if not settings.moderation_logging else '' }}">
-                        {{ 'Enabled' if settings.moderation_logging else 'Disabled' }}
-                    </button>
-                </div>
-
-                <div class="card">
-                    <div>
-                        <h3>👋 Welcome & Staff Panel</h3>
-                        <p>Manages member notifications, application response tracking, and automated announcements.</p>
-                    </div>
-                    <button name="toggle" value="welcome_messages" class="toggle-btn {{ 'off' if not settings.welcome_messages else '' }}">
-                        {{ 'Enabled' if settings.welcome_messages else 'Disabled' }}
-                    </button>
-                </div>
+MANAGEMENT_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Managing Server</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 40px; text-align: center; }
+        .container { max-width: 600px; margin: auto; background: #1e293b; padding: 40px; border-radius: 16px; }
+        .setting-box { background: #334155; margin: 15px 0; padding: 15px 20px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        button { background: #0ea5e9; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        .off { background: #ef4444; }
+        .btn { background: #64748b; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; display: inline-block; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⚙️ Server Configuration</h1>
+        <form method="POST">
+            <div class="setting-box">
+                <span>🤖 AI Auto-Responder</span>
+                <button name="toggle" value="auto_responder" class="{{ 'off' if not settings.auto_responder else '' }}">
+                    {{ 'Enabled' if settings.auto_responder else 'Disabled' }}
+                </button>
+            </div>
+            <div class="setting-box">
+                <span>🛡️ Moderation Logging</span>
+                <button name="toggle" value="moderation_logging" class="{{ 'off' if not settings.moderation_logging else '' }}">
+                    {{ 'Enabled' if settings.moderation_logging else 'Disabled' }}
+                </button>
             </div>
         </form>
+        <a href="/dashboard" class="btn">Back to Server List</a>
     </div>
 </body>
 </html>
@@ -295,23 +227,72 @@ CARL_STYLE_HTML = """
 
 @app.route('/')
 def home():
-    return render_template_string(CARL_STYLE_HTML, settings=bot_settings)
+    return render_template_string(LANDING_PAGE_HTML, client_id=CLIENT_ID)
 
-@app.route('/update', methods=['POST'])
-def update_setting():
-    feature = request.form.get('toggle')
-    if feature in bot_settings:
-        bot_settings[feature] = not bot_settings[feature]
-    return redirect(url_for('home'))
+@app.route('/login')
+def login():
+    discord_login_url = f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify+guilds"
+    return redirect(discord_login_url)
+
+@app.route('/callback')
+def callback():
+    code = request.args.get('code')
+    data = {
+        'client_id': CLIENT_ID,
+        'client_secret': CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'code': code,
+        'redirect_uri': REDIRECT_URI
+    }
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
+    token_json = r.json()
+    
+    access_token = token_json.get('access_token')
+    if not access_token:
+        return redirect('/')
+
+    # Fetch User Profile
+    user_headers = {'Authorization': f'Bearer {access_token}'}
+    user_resp = requests.get('https://discord.com/api/users/@me', headers=user_headers).json()
+    session['user'] = user_resp
+
+    # Fetch User Guilds
+    guilds_resp = requests.get('https://discord.com/api/users/@me/guilds', headers=user_headers).json()
+    session['guilds'] = guilds_resp
+
+    return redirect('/dashboard')
+
+@app.route('/dashboard')
+def dashboard():
+    if 'user' not in session:
+        return redirect('/')
+    return render_template_string(DASHBOARD_HTML, user=session['user'], guilds=session['guilds'])
+
+@app.route('/manage/<guild_id>', methods=['GET', 'POST'])
+def manage_server(guild_id):
+    if 'user' not in session:
+        return redirect('/')
+    
+    config = get_server_config(guild_id)
+    if request.method == 'POST':
+        feature = request.form.get('toggle')
+        if feature in config:
+            config[feature] = not config[feature]
+            
+    return render_template_string(MANAGEMENT_HTML, settings=config)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/')
 
 def run_web():
     app.run(host='0.0.0.0', port=10000)
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# Run the Bot
+# Run Bot
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 if DISCORD_TOKEN:
     bot.run(DISCORD_TOKEN)
-else:
-    print("Error: DISCORD_TOKEN environment variable is missing!")
