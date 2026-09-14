@@ -17,29 +17,33 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # OAuth2 Credentials from Environment Variables
 CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "YOUR_DISCORD_CLIENT_ID")
 CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "YOUR_DISCORD_CLIENT_SECRET")
-REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "https://YOUR_RENDER_URL.onrender.com/callback")
+REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "https://discord-bot-3gb8.onrender.com/callback")
 
-# Per-server settings storage (In production, replace this with a database like PostgreSQL/SQLite)
+# Target Channel ID for Staff Results
+STAFF_RESULTS_CHANNEL_ID = int(os.getenv("STAFF_RESULTS_CHANNEL_ID", "1546885221071200276"))
+
+# Per-server settings storage
 server_settings = {}
 
 def get_server_config(guild_id):
-    if guild_id not in server_settings:
-        server_settings[guild_id] = {
+    guild_id_str = str(guild_id)
+    if guild_id_str not in server_settings:
+        server_settings[guild_id_str] = {
             "auto_responder": True,
             "moderation_logging": True,
             "welcome_messages": True
         }
-    return server_settings[guild_id]
+    return server_settings[guild_id_str]
 
-def ask_ai(channel_id, prompt):
+def ask_ai(prompt):
     last_error = None
     gemini_keys = [k for k in [os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_2")] if k]
     groq_keys = [k for k in [os.getenv("GROQ_API_KEY"), os.getenv("GROQ_API_KEY_2")] if k]
 
+    # 1. Try Gemini Keys
     for g_key in gemini_keys:
         try:
             client = genai.Client(api_key=g_key)
-            # Simple stateless or basic handling
             response = client.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=prompt
@@ -49,13 +53,14 @@ def ask_ai(channel_id, prompt):
             last_error = e
             continue
 
+    # 2. Try Groq Keys
     for gr_key in groq_keys:
         try:
             groq_client = Groq(api_key=gr_key)
             completion = groq_client.chat.completions.create(
                 model="openai/gpt-oss-120b",
                 messages=[
-                    {"role": "system", "content": "You are a helpful Discord AI backup assistant."},
+                    {"role": "system", "content": "You are a helpful Discord AI assistant."},
                     {"role": "user", "content": prompt}
                 ],
             )
@@ -75,21 +80,69 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# ----------------- DISCORD COMMANDS -----------------
-@bot.tree.command(name="chat", description="Ask the AI anything!")
+# ----------------- SLASH COMMANDS -----------------
+@bot.tree.command(name="chat", description="Ask the AI anything using slash commands!")
 @app_commands.describe(prompt="What would you like to ask?")
 async def chat(interaction: discord.Interaction, prompt: str):
-    config = get_server_config(str(interaction.guild_id))
-    if not config["auto_responder"]:
+    guild_id = interaction.guild_id if interaction.guild_id else "DM"
+    config = get_server_config(guild_id)
+    if guild_id != "DM" and not config["auto_responder"]:
         await interaction.response.send_message("❌ AI Auto-Responder is disabled for this server via the web panel.", ephemeral=True)
         return
 
     await interaction.response.defer()
     try:
-        answer_text = ask_ai(interaction.channel_id, prompt)
+        answer_text = ask_ai(prompt)
         await interaction.followup.send(f"**Question:** {prompt}\n\n**Answer:**\n{answer_text[:1900]}")
     except Exception as e:
         await interaction.followup.send(f"❌ **Debug Error:** {e}")
+
+@bot.tree.command(name="staff_result", description="Announce a staff application result.")
+@app_commands.describe(
+    status="Select whether the applicant was accepted or denied",
+    applicant="The user whose application was processed",
+    reason="Optional reason or additional notes for the decision"
+)
+async def staff_result(
+    interaction: discord.Interaction, 
+    status: Literal["accepted", "denied"], 
+    applicant: discord.User,
+    reason: str = "Thank you for taking the time to apply!"
+):
+    channel = bot.get_channel(STAFF_RESULTS_CHANNEL_ID)
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(STAFF_RESULTS_CHANNEL_ID)
+        except Exception:
+            await interaction.response.send_message("❌ Error: Could not find staff results channel.", ephemeral=True)
+            return
+
+    if status == "accepted":
+        embed = discord.Embed(
+            title="🎉 Staff Application Status: ACCEPTED!",
+            description=f"Congratulations {applicant.mention}, your application has been **accepted**! Welcome to the team.",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
+        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📝 Reason", value=reason, inline=False)
+        embed.set_thumbnail(url=applicant.display_avatar.url)
+    else:
+        embed = discord.Embed(
+            title="❌ Staff Application Status: DENIED",
+            description=f"Hello {applicant.mention}, your application has been **denied** at this time.",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
+        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📝 Reason", value=reason, inline=False)
+        embed.set_thumbnail(url=applicant.display_avatar.url)
+
+    try:
+        await channel.send(content=f"{applicant.mention}", embed=embed)
+        await interaction.response.send_message(f"✅ Staff result sent successfully!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Failed to send message: {e}", ephemeral=True)
 
 @bot.tree.command(name="poll", description="Create a community poll.")
 @app_commands.describe(question="The question for the poll")
@@ -252,12 +305,10 @@ def callback():
     if not access_token:
         return redirect('/')
 
-    # Fetch User Profile
     user_headers = {'Authorization': f'Bearer {access_token}'}
     user_resp = requests.get('https://discord.com/api/users/@me', headers=user_headers).json()
     session['user'] = user_resp
 
-    # Fetch User Guilds
     guilds_resp = requests.get('https://discord.com/api/users/@me/guilds', headers=user_headers).json()
     session['guilds'] = guilds_resp
 
