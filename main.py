@@ -304,4 +304,301 @@ async def ascii_text(interaction: discord.Interaction, text: str):
     if len(text) > 10:
         await interaction.response.send_message("❌ Keep it under 10 characters for proper formatting!", ephemeral=True)
         return
-    await interaction.response.send_message(f"```fix\n{text.upper()}\n
+    clean_txt = text.upper()
+    await interaction.response.send_message(f"```fix\n{clean_txt}\n```")
+
+@bot.tree.command(name="rate", description="Rate something out of 10 randomly.")
+@app_commands.describe(thing="What do you want me to rate?")
+async def rate(interaction: discord.Interaction, thing: str):
+    score = random.randint(0, 10)
+    await interaction.response.send_message(f"⭐ I'd rate **{thing}** a **{score}/10**!")
+
+@bot.tree.command(name="ship", description="Calculate compatibility match between two users.")
+@app_commands.describe(user1="First user", user2="Second user")
+async def ship(interaction: discord.Interaction, user1: discord.Member, user2: discord.Member):
+    score = random.randint(0, 100)
+    bar = "█" * (score // 10) + "░" * (10 - (score // 10))
+    embed = discord.Embed(title="💖 Matchmaking Calculator", description=f"Matching {user1.mention} & {user2.mention}\n\n**{score}%**\n`[{bar}]`", color=discord.Color.magenta())
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="choose", description="Pick randomly between multiple options.")
+@app_commands.describe(options="Options separated by commas (e.g. Pizza, Burger)")
+async def choose(interaction: discord.Interaction, options: str):
+    choice_list = [opt.strip() for opt in options.split(",")]
+    if len(choice_list) < 2:
+        await interaction.response.send_message("❌ Please provide at least two options separated by a comma!", ephemeral=True)
+        return
+    selected = random.choice(choice_list)
+    await interaction.response.send_message(f"🎯 I choose: **{selected}**!")
+
+@bot.tree.command(name="rollrange", description="Roll a random number between a minimum and maximum.")
+@app_commands.describe(min_val="Minimum number", max_val="Maximum number")
+async def rollrange(interaction: discord.Interaction, min_val: int, max_val: int):
+    if min_val >= max_val:
+        await interaction.response.send_message("❌ Minimum must be lower than maximum!", ephemeral=True)
+        return
+    result = random.randint(min_val, max_val)
+    await interaction.response.send_message(f"🎲 Random number between {min_val} and {max_val}: **{result}**")
+
+@bot.tree.command(name="time", description="Check current UTC server time.")
+async def current_time(interaction: discord.Interaction):
+    now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    await interaction.response.send_message(f"🕒 Current Bot System Time (UTC): **{now}**")
+
+@bot.tree.command(name="balance", description="Check your virtual bank balance.")
+async def balance(interaction: discord.Interaction):
+    coins = random.randint(100, 5000)
+    embed = discord.Embed(title=f"🏦 {interaction.user.name}'s Bank", description=f"Balance: **{coins} 🪙 Coins**", color=discord.Color.gold())
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="daily", description="Claim your daily free server coins.")
+async def daily(interaction: discord.Interaction):
+    reward = 500
+    embed = discord.Embed(title="🎁 Daily Claim", description=f"You successfully claimed your daily **{reward} 🪙 Coins**!", color=discord.Color.green())
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="work", description="Do a random job to earn server coins.")
+async def work(interaction: discord.Interaction):
+    jobs = [
+        ("Discord Moderator", 150),
+        ("Bug Hunter", 300),
+        ("Bot Developer", 450),
+        ("Pizza Delivery", 100),
+        ("Server Cleaner", 75)
+    ]
+    job, earned = random.choice(jobs)
+    await interaction.response.send_message(f"💼 You worked as a **{job}** and earned **{earned} 🪙 Coins**!")
+
+@bot.tree.command(name="slots", description="Play the slot machine for coins.")
+async def slots(interaction: discord.Interaction):
+    symbols = ["🍒", "🍋", "🍊", "🍇", "🔔", "💎"]
+    res = [random.choice(symbols) for _ in range(3)]
+    if res[0] == res[1] == res[2]:
+        msg = f"{' '.join(res)}\n🎉 **Jackpot! You won 1,000 coins!**"
+    elif res[0] == res[1] or res[1] == res[2]:
+        msg = f"{' '.join(res)}\n✨ **Small win! You won 200 coins!**"
+    else:
+        msg = f"{' '.join(res)}\n❌ **You lost! Better luck next time.**"
+    embed = discord.Embed(title="🎰 Slot Machine", description=msg, color=discord.Color.dark_gold())
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="vaporwave", description="Aestheticize your text.")
+@app_commands.describe(text="Text to vaporwave")
+async def vaporwave(interaction: discord.Interaction, text: str):
+    converted = "".join([chr(ord(c) + 65248) if 33 <= ord(c) <= 126 else c for c in text])
+    await interaction.response.send_message(converted)
+
+@bot.tree.command(name="mock", description="Mocker spongebob text generator.")
+@app_commands.describe(text="Text to mock")
+async def mock(interaction: discord.Interaction, text: str):
+    mocked = "".join([c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(text)])
+    await interaction.response.send_message(f"🧽 {mocked}")
+
+@bot.tree.command(name="hug", description="Send a virtual hug to someone.")
+@app_commands.describe(member="Member to hug")
+async def hug(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"🤗 {interaction.user.mention} gives a warm hug to {member.mention}!")
+
+@bot.tree.command(name="pat", description="Pat a user gently on the head.")
+@app_commands.describe(member="Member to pat")
+async def pat(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"✋ {interaction.user.mention} softly pats {member.mention} on the head!")
+
+@bot.tree.command(name="highfive", description="Give someone a high five.")
+@app_commands.describe(member="Member to high five")
+async def highfive(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"🙌 {interaction.user.mention} high-fives {member.mention}!")
+
+@bot.tree.command(name="slap", description="Slap a user playfully.")
+@app_commands.describe(member="Member to slap")
+async def slap(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"👋 {interaction.user.mention} slaps {member.mention} around a bit with a large trout!")
+
+
+# ----------------- PUBLIC FLASK WEBSITE & OAUTH2 -----------------
+app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "super-secret-oauth-key")
+
+LANDING_PAGE_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Serenity Bot - Multi-Server Management</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 0; text-align: center; }
+        header { display: flex; justify-content: space-between; align-items: center; padding: 20px 50px; background: #1e293b; }
+        .logo { font-size: 22px; font-weight: bold; color: #38bdf8; }
+        .hero { padding: 100px 20px; }
+        h1 { font-size: 50px; color: #f1f5f9; margin-bottom: 10px; }
+        p { color: #94a3b8; font-size: 18px; margin-bottom: 30px; }
+        .btn { background: #5865F2; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; margin: 10px; }
+        .btn:hover { background: #4752C4; }
+        .btn-dashboard { background: #10b981; }
+        .btn-dashboard:hover { background: #059669; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">🤖 Serenity Bot Hub</div>
+        <div>
+            {% if 'user' in session %}
+                <a href="/dashboard" class="btn btn-dashboard">Control Panel</a>
+                <a href="/logout" class="btn" style="background: #ef4444;">Logout</a>
+            {% else %}
+                <a href="/login" class="btn">Login with Discord</a>
+            {% endif %}
+        </div>
+    </header>
+    <div class="hero">
+        <h1>Supercharge Your Discord Server</h1>
+        <p>Advanced AI failover, moderation logs, and custom management features for any community.</p>
+        <a href="https://discord.com/oauth2/authorize?client_id={{ client_id }}&scope=bot+applications.commands&permissions=8" target="_blank" class="btn">Add to Discord</a>
+    </div>
+</body>
+</html>
+"""
+
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Server Management Dashboard</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 40px; text-align: center; }
+        .container { max-width: 700px; margin: auto; background: #1e293b; padding: 40px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        h1 { color: #38bdf8; }
+        .server-box { background: #334155; margin: 15px 0; padding: 20px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .btn { background: #0ea5e9; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; text-decoration: none; }
+        .btn:hover { background: #0284c7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome, {{ user.username }}! 👋</h1>
+        <p>Select a server where you have administrative privileges to configure features.</p>
+        <hr style="border: 0; border-top: 1px solid #475569; margin: 25px 0;">
+        
+        {% for guild in guilds %}
+            {% if (guild.permissions | int) & 0x8 == 0x8 or (guild.permissions | int) & 0x20 == 0x20 %}
+                <div class="server-box">
+                    <span><b>{{ guild.name }}</b></span>
+                    <a href="/manage/{{ guild.id }}" class="btn">Manage Settings</a>
+                </div>
+            {% endif %}
+        {% endfor %}
+        <br>
+        <a href="/" class="btn" style="background: #64748b;">Back to Home</a>
+    </div>
+</body>
+</html>
+"""
+
+MANAGEMENT_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Managing Server</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 40px; text-align: center; }
+        .container { max-width: 600px; margin: auto; background: #1e293b; padding: 40px; border-radius: 16px; }
+        .setting-box { background: #334155; margin: 15px 0; padding: 15px 20px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        button { background: #0ea5e9; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        .off { background: #ef4444; }
+        .btn { background: #64748b; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; display: inline-block; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⚙️ Server Configuration</h1>
+        <form method="POST">
+            <div class="setting-box">
+                <span>🤖 AI Auto-Responder</span>
+                <button name="toggle" value="auto_responder" class="{{ 'off' if not settings.auto_responder else '' }}">
+                    {{ 'Enabled' if settings.auto_responder else 'Disabled' }}
+                </button>
+            </div>
+            <div class="setting-box">
+                <span>🛡️ Moderation Logging</span>
+                <button name="toggle" value="moderation_logging" class="{{ 'off' if not settings.moderation_logging else '' }}">
+                    {{ 'Enabled' if settings.moderation_logging else 'Disabled' }}
+                </button>
+            </div>
+        </form>
+        <a href="/dashboard" class="btn">Back to Server List</a>
+    </div>
+</body>
+</html>
+"""
+
+@app.route('/')
+def home():
+    return render_template_string(LANDING_PAGE_HTML, client_id=CLIENT_ID)
+
+@app.route('/login')
+def login():
+    discord_login_url = f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify+guilds"
+    return redirect(discord_login_url)
+
+@app.route('/callback')
+def callback():
+    code = request.args.get('code')
+    data = {
+        'client_id': CLIENT_ID,
+        'client_secret': CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'code': code,
+        'redirect_uri': REDIRECT_URI
+    }
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    r = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
+    token_json = r.json()
+    
+    access_token = token_json.get('access_token')
+    if not access_token:
+        return redirect('/')
+
+    user_headers = {'Authorization': f'Bearer {access_token}'}
+    user_resp = requests.get('https://discord.com/api/users/@me', headers=user_headers).json()
+    session['user'] = user_resp
+
+    guilds_resp = requests.get('https://discord.com/api/users/@me/guilds', headers=user_headers).json()
+    session['guilds'] = guilds_resp
+
+    return redirect('/dashboard')
+
+@app.route('/dashboard')
+def dashboard():
+    if 'user' not in session:
+        return redirect('/')
+    return render_template_string(DASHBOARD_HTML, user=session['user'], guilds=session['guilds'])
+
+@app.route('/manage/<guild_id>', methods=['GET', 'POST'])
+def manage_server(guild_id):
+    if 'user' not in session:
+        return redirect('/')
+    
+    config = get_server_config(guild_id)
+    if request.method == 'POST':
+        feature = request.form.get('toggle')
+        if feature in config:
+            config[feature] = not config[feature]
+            
+    return render_template_string(MANAGEMENT_HTML, settings=config)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/')
+
+def run_web():
+    app.run(host='0.0.0.0', port=10000)
+
+threading.Thread(target=run_web, daemon=True).start()
+
+# Run Bot
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+if DISCORD_TOKEN:
+    bot.run(DISCORD_TOKEN)
