@@ -4,27 +4,33 @@ from discord import app_commands
 from discord.ext import commands
 from typing import Literal
 from google import genai
+from groq import Groq
 
 # Setup Discord Bot
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Set your Discord User ID here
+# Set your Discord User ID here (or via Render Environment Variables)
 OWNER_ID = int(os.getenv("OWNER_ID", "YOUR_DISCORD_USER_ID_HERE"))
 
 # Target Channel ID for Staff Results
 STAFF_RESULTS_CHANNEL_ID = 1546885221071200276
 
-# Setup Gemini AI Client
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Setup Gemini API Client
+gemini_key = os.getenv("GEMINI_API_KEY")
+gemini_client = genai.Client(api_key=gemini_key) if gemini_key else None
+
+# Setup Groq API Client (Backup Model: Llama 3.1)
+groq_key = os.getenv("GROQ_API_KEY")
+groq_client = Groq(api_key=groq_key) if groq_key else None
 
 # State variables
 is_offline_mode = False
 channel_chats = {}
 
 def get_chat_session(channel_id):
-    if channel_id not in channel_chats:
+    if channel_id not in channel_chats and gemini_client:
         channel_chats[channel_id] = gemini_client.chats.create(
             model="gemini-3.6-flash",
             config={
@@ -34,7 +40,46 @@ def get_chat_session(channel_id):
                 )
             }
         )
-    return channel_chats[channel_id]
+    return channel_chats.get(channel_id)
+
+def ask_ai(channel_id, prompt):
+    """
+    Tries Gemini first. If Gemini hits a rate limit (429), 
+    it automatically falls back to Groq (Llama 3.1).
+    """
+    # 1. Try Primary AI (Gemini)
+    if gemini_client:
+        try:
+            chat_session = get_chat_session(channel_id)
+            response = chat_session.send_message(prompt)
+            return response.text
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                print("Gemini rate limit hit. Switching to Groq fallback...")
+                # Reset Gemini session for this channel since it failed
+                if channel_id in channel_chats:
+                    del channel_chats[channel_id]
+            else:
+                raise e
+
+    # 2. Try Secondary AI (Groq / Llama 3.1)
+    if groq_client:
+        try:
+            completion = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "You are a helpful Discord AI assistant acting as a backup model."
+                    },
+                    {"role": "user", "content": prompt}
+                ],
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            raise e
+
+    raise Exception("Both Gemini and Groq API services failed or are unconfigured.")
 
 @bot.event
 async def on_ready():
@@ -44,108 +89,6 @@ async def on_ready():
         print(f"Synced {len(synced)} slash command(s).")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
-
-# ----------------- STAFF RESULT SLASH COMMAND -----------------
-@bot.tree.command(name="staff_result", description="Announce a staff application result.")
-@app_commands.describe(
-    status="Select whether the applicant was accepted or denied",
-    applicant="The user whose application was processed",
-    reason="Optional reason or additional notes for the decision"
-)
-async def staff_result(
-    interaction: discord.Interaction, 
-    status: Literal["accepted", "denied"], 
-    applicant: discord.User,
-    reason: str = "Thank you for taking the time to apply!"
-):
-    if is_offline_mode and interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("The bot is currently offline.", ephemeral=True)
-        return
-
-    # Find the target results channel
-    channel = bot.get_channel(STAFF_RESULTS_CHANNEL_ID)
-    if not channel:
-        try:
-            channel = await bot.fetch_channel(STAFF_RESULTS_CHANNEL_ID)
-        except Exception:
-            await interaction.response.send_message(
-                "❌ Error: Could not find the staff results channel. Ensure the bot is in that server and has access to view the channel.", 
-                ephemeral=True
-            )
-            return
-
-    # Create detailed response based on choice
-    if status == "accepted":
-        embed = discord.Embed(
-            title="🎉 Staff Application Status: ACCEPTED!",
-            description=f"Congratulations {applicant.mention}, your staff application has been **accepted**! Welcome to the team.",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
-        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
-        embed.add_field(name="📌 Next Steps", value="Please await further instructions from senior management regarding role assignment and onboarding.", inline=False)
-        embed.add_field(name="📝 Notes / Reason", value=reason, inline=False)
-        embed.set_thumbnail(url=applicant.display_avatar.url)
-        embed.set_footer(text="Official Staff Application System", icon_url=bot.user.display_avatar.url)
-
-    else:  # status == "denied"
-        embed = discord.Embed(
-            title="❌ Staff Application Status: DENIED",
-            description=f"Hello {applicant.mention}, thank you for your interest in joining our staff team. Unfortunately, your application has been **denied** at this time.",
-            color=discord.Color.red()
-        )
-        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
-        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
-        embed.add_field(name="📝 Reason / Feedback", value=reason, inline=False)
-        embed.add_field(name="⏳ Reapplying", value="You may re-apply in future application cycles unless stated otherwise.", inline=False)
-        embed.set_thumbnail(url=applicant.display_avatar.url)
-        embed.set_footer(text="Official Staff Application System", icon_url=bot.user.display_avatar.url)
-
-    # Send the embed to the designated channel
-    try:
-        await channel.send(content=f"{applicant.mention}", embed=embed)
-        await interaction.response.send_message(f"✅ Staff result for {applicant.mention} sent to <#{STAFF_RESULTS_CHANNEL_ID}>!", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"Failed to send message: {e}", ephemeral=True)
-
-# ----------------- DIRECT MESSAGE SLASH COMMAND -----------------
-@bot.tree.command(name="dm", description="Send a direct message to a specific user.")
-@app_commands.describe(user="The user you want to message", message="The message content to send")
-async def dm_cmd(interaction: discord.Interaction, user: discord.User, message: str):
-    if is_offline_mode and interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("The bot is currently offline.", ephemeral=True)
-        return
-
-    try:
-        await user.send(message)
-        await interaction.response.send_message(f"✅ Message successfully sent to {user.mention}!", ephemeral=True)
-    except discord.Forbidden:
-        await interaction.response.send_message(f"❌ Couldn't send DM to {user.mention}. They may have Direct Messages turned off.", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
-
-# ----------------- OWNER STATUS COMMANDS -----------------
-@bot.tree.command(name="offline", description="Put the bot into invisible/maintenance mode (Owner only).")
-async def offline_cmd(interaction: discord.Interaction):
-    global is_offline_mode
-    if interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("❌ You are not authorized to use this command.", ephemeral=True)
-        return
-
-    is_offline_mode = True
-    await bot.change_presence(status=discord.Status.invisible)
-    await interaction.response.send_message("🤫 Bot is now in offline mode.", ephemeral=True)
-
-@bot.tree.command(name="online", description="Bring the bot back online (Owner only).")
-async def online_cmd(interaction: discord.Interaction):
-    global is_offline_mode
-    if interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("❌ You are not authorized to use this command.", ephemeral=True)
-        return
-
-    is_offline_mode = False
-    await bot.change_presence(status=discord.Status.online)
-    await interaction.response.send_message("🟢 Bot is now back online!", ephemeral=True)
 
 # ----------------- AI CHAT SLASH COMMAND -----------------
 @bot.tree.command(name="chat", description="Ask the AI anything!")
@@ -158,15 +101,11 @@ async def chat(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
     
     try:
-        chat_session = get_chat_session(interaction.channel_id)
-        response = chat_session.send_message(prompt)
-        answer = response.text[:1900]
+        answer_text = ask_ai(interaction.channel_id, prompt)
+        answer = answer_text[:1900]
         await interaction.followup.send(f"**Question:** {prompt}\n\n**Answer:**\n{answer}")
     except Exception as e:
-        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-            await interaction.followup.send("⏳ **Rate Limit Hit:** Please wait 1 minute before trying again.")
-        else:
-            await interaction.followup.send("Sorry, I ran into an issue generating a response.")
+        await interaction.followup.send("⏳ **Rate Limit Hit:** All available AI services are currently busy. Please wait 1 minute!")
 
 # ----------------- AUTO-REPLY ON @MENTION -----------------
 @bot.event
@@ -186,17 +125,100 @@ async def on_message(message):
 
         async with message.channel.typing():
             try:
-                chat_session = get_chat_session(message.channel.id)
-                response = chat_session.send_message(clean_text)
-                answer = response.text[:1900]
+                answer_text = ask_ai(message.channel.id, clean_text)
+                answer = answer_text[:1900]
                 await message.reply(answer)
             except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    await message.reply("⏳ **Rate Limit Hit:** Please wait 1 minute before trying again.")
-                else:
-                    await message.reply("Sorry, I ran into an issue generating a response.")
+                await message.reply("⏳ **Rate Limit Hit:** All available AI services are currently busy. Please wait 1 minute!")
 
     await bot.process_commands(message)
+
+# ----------------- STAFF RESULT SLASH COMMAND -----------------
+@bot.tree.command(name="staff_result", description="Announce a staff application result.")
+@app_commands.describe(
+    status="Select whether the applicant was accepted or denied",
+    applicant="The user whose application was processed",
+    reason="Optional reason or additional notes for the decision"
+)
+async def staff_result(
+    interaction: discord.Interaction, 
+    status: Literal["accepted", "denied"], 
+    applicant: discord.User,
+    reason: str = "Thank you for taking the time to apply!"
+):
+    if is_offline_mode and interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("The bot is currently offline.", ephemeral=True)
+        return
+
+    channel = bot.get_channel(STAFF_RESULTS_CHANNEL_ID)
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(STAFF_RESULTS_CHANNEL_ID)
+        except Exception:
+            await interaction.response.send_message("❌ Error: Could not find staff results channel.", ephemeral=True)
+            return
+
+    if status == "accepted":
+        embed = discord.Embed(
+            title="🎉 Staff Application Status: ACCEPTED!",
+            description=f"Congratulations {applicant.mention}, your application has been **accepted**!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
+        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📝 Reason", value=reason, inline=False)
+        embed.set_thumbnail(url=applicant.display_avatar.url)
+    else:
+        embed = discord.Embed(
+            title="❌ Staff Application Status: DENIED",
+            description=f"Hello {applicant.mention}, your application has been **denied** at this time.",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
+        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📝 Reason", value=reason, inline=False)
+        embed.set_thumbnail(url=applicant.display_avatar.url)
+
+    try:
+        await channel.send(content=f"{applicant.mention}", embed=embed)
+        await interaction.response.send_message(f"✅ Staff result sent to <#{STAFF_RESULTS_CHANNEL_ID}>!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Failed to send message: {e}", ephemeral=True)
+
+# ----------------- DIRECT MESSAGE SLASH COMMAND -----------------
+@bot.tree.command(name="dm", description="Send a direct message to a specific user.")
+@app_commands.describe(user="The user you want to message", message="The message content to send")
+async def dm_cmd(interaction: discord.Interaction, user: discord.User, message: str):
+    if is_offline_mode and interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("The bot is currently offline.", ephemeral=True)
+        return
+
+    try:
+        await user.send(message)
+        await interaction.response.send_message(f"✅ Message sent to {user.mention}!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Could not send DM: {e}", ephemeral=True)
+
+# ----------------- OWNER STATUS COMMANDS -----------------
+@bot.tree.command(name="offline", description="Put the bot into invisible/maintenance mode.")
+async def offline_cmd(interaction: discord.Interaction):
+    global is_offline_mode
+    if interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("❌ Unauthorized.", ephemeral=True)
+        return
+    is_offline_mode = True
+    await bot.change_presence(status=discord.Status.invisible)
+    await interaction.response.send_message("🤫 Bot is now offline.", ephemeral=True)
+
+@bot.tree.command(name="online", description="Bring the bot back online.")
+async def online_cmd(interaction: discord.Interaction):
+    global is_offline_mode
+    if interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("❌ Unauthorized.", ephemeral=True)
+        return
+    is_offline_mode = False
+    await bot.change_presence(status=discord.Status.online)
+    await interaction.response.send_message("🟢 Bot is now online!", ephemeral=True)
 
 # ----------------- RESET MEMORY COMMAND -----------------
 @bot.tree.command(name="resetchat", description="Clear channel conversation memory.")
