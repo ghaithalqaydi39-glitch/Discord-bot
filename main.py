@@ -2,114 +2,75 @@ import os
 import discord
 from discord import app_commands
 from discord.ext import commands
+from google import genai
 
-# Initialize bot client with required intents
+# Setup Discord Bot
 intents = discord.Intents.default()
-intents.members = True  # Required for member lookup in kick/ban commands
-
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Setup Gemini AI Client
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"Logged in as {bot.user.name}")
     try:
-        # Sync slash commands globally across all servers
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} slash command(s).")
     except Exception as e:
-        print(f"Failed to sync slash commands: {e}")
+        print(f"Failed to sync commands: {e}")
 
+# ----------------- AI CHAT SLASH COMMAND -----------------
+@bot.tree.command(name="chat", description="Ask the AI anything!")
+@app_commands.describe(prompt="What would you like to ask?")
+async def chat(interaction: discord.Interaction, prompt: str):
+    # Defer response since AI might take 1-2 seconds to think
+    await interaction.response.defer()
+    
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        # Discord message limit is 2000 characters
+        answer = response.text[:1900]
+        await interaction.followup.send(f"**Question:** {prompt}\n\n**Answer:**\n{answer}")
+    except Exception as e:
+        await interaction.followup.send(f"Error generating response: {e}")
 
-# ---------------------------------------------------------
-# Utility Commands
-# ---------------------------------------------------------
-
-@bot.tree.command(name="ping", description="Replies with latency")
-async def ping(interaction: discord.Interaction):
-    latency = round(bot.latency * 1000)
-    await interaction.response.send_message(f"Pong! Latency is {latency}ms.")
-
-
-@bot.tree.command(name="serverinfo", description="Displays basic server information")
-async def serverinfo(interaction: discord.Interaction):
-    guild = interaction.guild
-    await interaction.response.send_message(
-        f"**Server Name:** {guild.name}\n**Total Members:** {guild.member_count}"
-    )
-
-
-@bot.tree.command(name="say", description="Makes the bot send a message to a channel")
-@app_commands.checks.has_permissions(manage_messages=True)
-async def say(
-    interaction: discord.Interaction, 
-    message: str, 
-    channel: discord.TextChannel = None
-):
-    target_channel = channel or interaction.channel
-    await target_channel.send(message)
-    await interaction.response.send_message(f"Message sent to {target_channel.mention}!", ephemeral=True)
-
-
-# ---------------------------------------------------------
-# Moderation Commands
-# ---------------------------------------------------------
-
-@bot.tree.command(name="kick", description="Kicks a member from the server")
-@app_commands.checks.has_permissions(kick_members=True)
-async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    # Role hierarchy check
-    if member.top_role >= interaction.user.top_role and interaction.guild.owner != interaction.user:
-        await interaction.response.send_message("You cannot kick someone with a role equal to or higher than yours.", ephemeral=True)
+# ----------------- AUTO-REPLY ON @MENTION -----------------
+@bot.event
+async def on_message(message):
+    # Ignore messages sent by the bot itself
+    if message.author == bot.user:
         return
 
-    await member.kick(reason=reason)
-    await interaction.response.send_message(f"Kicked **{member.display_name}** | Reason: {reason}")
+    # If the bot is tagged/mentioned in a message
+    if bot.user in message.mentions:
+        # Remove the @bot mention from the prompt text
+        clean_text = message.content.replace(f"<@{bot.user.id}>", "").strip()
+        
+        if not clean_text:
+            await message.reply("Hey! How can I help you today?")
+            return
 
+        async with message.channel.typing():
+            try:
+                response = gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=clean_text,
+                )
+                answer = response.text[:1900]
+                await message.reply(answer)
+            except Exception as e:
+                await message.reply(f"Sorry, I ran into an issue: {e}")
 
-@bot.tree.command(name="ban", description="Bans a member from the server")
-@app_commands.checks.has_permissions(ban_members=True)
-async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    # Role hierarchy check
-    if member.top_role >= interaction.user.top_role and interaction.guild.owner != interaction.user:
-        await interaction.response.send_message("You cannot ban someone with a role equal to or higher than yours.", ephemeral=True)
-        return
+    await bot.process_commands(message)
 
-    await member.ban(reason=reason)
-    await interaction.response.send_message(f"Banned **{member.display_name}** | Reason: {reason}")
-
-
-@bot.tree.command(name="clear", description="Deletes a specified number of recent messages (1-100)")
-@app_commands.checks.has_permissions(manage_messages=True)
-async def clear(interaction: discord.Interaction, amount: int):
-    if amount < 1 or amount > 100:
-        await interaction.response.send_message("Please enter a number between 1 and 100.", ephemeral=True)
-        return
-
-    # Defer response to avoid timeout during bulk deletion
-    await interaction.response.defer(ephemeral=True)
-    deleted = await interaction.channel.purge(limit=amount)
-    await interaction.followup.send(f"Successfully deleted {len(deleted)} message(s).", ephemeral=True)
-
-
-# ---------------------------------------------------------
-# Permission Error Handler
-# ---------------------------------------------------------
-
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("❌ You do not have the required permissions to use this command.", ephemeral=True)
-    else:
-        await interaction.response.send_message("⚠️ An unexpected error occurred while running this command.", ephemeral=True)
-
-
-# ---------------------------------------------------------
-# Start Bot
-# ---------------------------------------------------------
-
-TOKEN = os.getenv("DISCORD_TOKEN")
-if TOKEN:
-    bot.run(TOKEN)
+# Run the Bot
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+if DISCORD_TOKEN:
+    bot.run(DISCORD_TOKEN)
 else:
-    print("Error: DISCORD_TOKEN environment variable is missing.")
+    print("Error: DISCORD_TOKEN environment variable is missing!")
