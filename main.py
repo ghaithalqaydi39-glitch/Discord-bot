@@ -6,7 +6,7 @@ from typing import Literal
 from google import genai
 from groq import Groq
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask, session, redirect, url_for, request, render_template_string
 
 # Setup Discord Bot
 intents = discord.Intents.default()
@@ -19,21 +19,20 @@ OWNER_ID = int(os.getenv("OWNER_ID", "YOUR_DISCORD_USER_ID_HERE"))
 # Target Channel ID for Staff Results
 STAFF_RESULTS_CHANNEL_ID = 1546885221071200276
 
-# State variables
+# State variables & Dynamic Server Settings
 is_offline_mode = False
 channel_chats = {}
+bot_settings = {
+    "auto_responder": True,
+    "moderation_logging": True,
+    "welcome_messages": True
+}
 
 def ask_ai(channel_id, prompt):
-    """
-    Tries 2 Gemini keys, then falls back to 2 Groq keys sequentially.
-    """
     last_error = None
-
-    # Collect available keys from environment variables
     gemini_keys = [k for k in [os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_2")] if k]
     groq_keys = [k for k in [os.getenv("GROQ_API_KEY"), os.getenv("GROQ_API_KEY_2")] if k]
 
-    # 1. Try Gemini Keys (Gemini 2.0 Flash)
     for g_key in gemini_keys:
         try:
             client = genai.Client(api_key=g_key)
@@ -41,42 +40,33 @@ def ask_ai(channel_id, prompt):
                 channel_chats[channel_id] = client.chats.create(
                     model="gemini-2.0-flash",
                     config={
-                        "system_instruction": (
-                            "You are a helpful, friendly Discord AI assistant. "
-                            "You have conversation memory and remember details shared with you in chat."
-                        )
+                        "system_instruction": "You are a helpful, friendly Discord AI assistant with conversation memory."
                     }
                 )
             response = channel_chats[channel_id].send_message(prompt)
             return response.text
         except Exception as e:
             last_error = e
-            print(f"Gemini key failed: {e}")
             if channel_id in channel_chats:
                 del channel_chats[channel_id]
-            continue  # Try next Gemini key
+            continue
 
-    # 2. Try Groq Keys (Using openai/gpt-oss-120b as backup model)
     for gr_key in groq_keys:
         try:
             groq_client = Groq(api_key=gr_key)
             completion = groq_client.chat.completions.create(
                 model="openai/gpt-oss-120b",
                 messages=[
-                    {
-                        "role": "system", 
-                        "content": "You are a helpful Discord AI assistant acting as a backup model."
-                    },
+                    {"role": "system", "content": "You are a helpful Discord AI backup assistant."},
                     {"role": "user", "content": prompt}
                 ],
             )
             return completion.choices[0].message.content
         except Exception as e:
             last_error = e
-            print(f"Groq key failed: {e}")
-            continue  # Try next Groq key
+            continue
 
-    raise Exception(f"All 4 AI keys failed or are unconfigured. Last error: {last_error}")
+    raise Exception(f"All 4 AI keys failed. Last error: {last_error}")
 
 @bot.event
 async def on_ready():
@@ -87,7 +77,7 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# ----------------- AI CHAT SLASH COMMAND -----------------
+# ----------------- AI CHAT & MENTIONS -----------------
 @bot.tree.command(name="chat", description="Ask the AI anything!")
 @app_commands.describe(prompt="What would you like to ask?")
 async def chat(interaction: discord.Interaction, prompt: str):
@@ -96,26 +86,21 @@ async def chat(interaction: discord.Interaction, prompt: str):
         return
 
     await interaction.response.defer()
-    
     try:
         answer_text = ask_ai(interaction.channel_id, prompt)
-        answer = answer_text[:1900]
-        await interaction.followup.send(f"**Question:** {prompt}\n\n**Answer:**\n{answer}")
+        await interaction.followup.send(f"**Question:** {prompt}\n\n**Answer:**\n{answer_text[:1900]}")
     except Exception as e:
         await interaction.followup.send(f"❌ **Debug Error:** {e}")
 
-# ----------------- AUTO-REPLY ON @MENTION -----------------
 @bot.event
 async def on_message(message):
-    if message.author == bot.user:
+    if message.author == bot.user or not bot_settings["auto_responder"]:
         return
-
     if is_offline_mode and message.author.id != OWNER_ID:
         return
 
     if bot.user in message.mentions:
         clean_text = message.content.replace(f"<@{bot.user.id}>", "").strip()
-        
         if not clean_text:
             await message.reply("Hey! How can I help you today?")
             return
@@ -123,81 +108,36 @@ async def on_message(message):
         async with message.channel.typing():
             try:
                 answer_text = ask_ai(message.channel.id, clean_text)
-                answer = answer_text[:1900]
-                await message.reply(answer)
+                await message.reply(answer_text[:1900])
             except Exception as e:
                 await message.reply(f"❌ **Debug Error:** {e}")
 
     await bot.process_commands(message)
 
-# ----------------- STAFF RESULT SLASH COMMAND -----------------
-@bot.tree.command(name="staff_result", description="Announce a staff application result.")
-@app_commands.describe(
-    status="Select whether the applicant was accepted or denied",
-    applicant="The user whose application was processed",
-    reason="Optional reason or additional notes for the decision"
-)
-async def staff_result(
-    interaction: discord.Interaction, 
-    status: Literal["accepted", "denied"], 
-    applicant: discord.User,
-    reason: str = "Thank you for taking the time to apply!"
-):
-    if is_offline_mode and interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("The bot is currently offline.", ephemeral=True)
-        return
+# ----------------- CARI-STYLE UTILITY & MOD COMMANDS -----------------
+@bot.tree.command(name="poll", description="Create a community poll with reactions.")
+@app_commands.describe(question="The question for the poll")
+async def poll_cmd(interaction: discord.Interaction, question: str):
+    embed = discord.Embed(title="📊 Server Poll", description=question, color=discord.Color.blue())
+    embed.set_footer(text=f"Created by {interaction.user.name}")
+    await interaction.response.send_message(embed=embed)
+    message = await interaction.original_response()
+    await message.add_reaction("👍")
+    await message.add_reaction("👎")
 
-    channel = bot.get_channel(STAFF_RESULTS_CHANNEL_ID)
-    if not channel:
-        try:
-            channel = await bot.fetch_channel(STAFF_RESULTS_CHANNEL_ID)
-        except Exception:
-            await interaction.response.send_message("❌ Error: Could not find staff results channel.", ephemeral=True)
-            return
+@bot.tree.command(name="kick", description="Kick a member from the server.")
+@app_commands.checks.has_permissions(kick_members=True)
+async def kick_cmd(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    await member.kick(reason=reason)
+    await interaction.response.send_message(f"✅ Kicked {member.mention}", ephemeral=True)
 
-    if status == "accepted":
-        embed = discord.Embed(
-            title="🎉 Staff Application Status: ACCEPTED!",
-            description=f"Congratulations {applicant.mention}, your application has been **accepted**! Welcome to the team.",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
-        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
-        embed.add_field(name="📝 Reason", value=reason, inline=False)
-        embed.set_thumbnail(url=applicant.display_avatar.url)
-    else:
-        embed = discord.Embed(
-            title="❌ Staff Application Status: DENIED",
-            description=f"Hello {applicant.mention}, your application has been **denied** at this time.",
-            color=discord.Color.red()
-        )
-        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
-        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
-        embed.add_field(name="📝 Reason", value=reason, inline=False)
-        embed.set_thumbnail(url=applicant.display_avatar.url)
+@bot.tree.command(name="ban", description="Ban a member from the server.")
+@app_commands.checks.has_permissions(ban_members=True)
+async def ban_cmd(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    await member.ban(reason=reason)
+    await interaction.response.send_message(f"✅ Banned {member.mention}", ephemeral=True)
 
-    try:
-        await channel.send(content=f"{applicant.mention}", embed=embed)
-        await interaction.response.send_message(f"✅ Staff result sent to <#{STAFF_RESULTS_CHANNEL_ID}>!", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"Failed to send message: {e}", ephemeral=True)
-
-# ----------------- DIRECT MESSAGE SLASH COMMAND -----------------
-@bot.tree.command(name="dm", description="Send a direct message to a specific user.")
-@app_commands.describe(user="The user you want to message", message="The message content to send")
-async def dm_cmd(interaction: discord.Interaction, user: discord.User, message: str):
-    if is_offline_mode and interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("The bot is currently offline.", ephemeral=True)
-        return
-
-    try:
-        await user.send(message)
-        await interaction.response.send_message(f"✅ Message sent to {user.mention}!", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"Could not send DM: {e}", ephemeral=True)
-
-# ----------------- OWNER STATUS COMMANDS -----------------
-@bot.tree.command(name="offline", description="Put the bot into invisible/maintenance mode.")
+@bot.tree.command(name="offline", description="Put the bot into maintenance mode (Owner Only).")
 async def offline_cmd(interaction: discord.Interaction):
     global is_offline_mode
     if interaction.user.id != OWNER_ID:
@@ -207,7 +147,7 @@ async def offline_cmd(interaction: discord.Interaction):
     await bot.change_presence(status=discord.Status.invisible)
     await interaction.response.send_message("🤫 Bot is now offline.", ephemeral=True)
 
-@bot.tree.command(name="online", description="Bring the bot back online.")
+@bot.tree.command(name="online", description="Bring the bot back online (Owner Only).")
 async def online_cmd(interaction: discord.Interaction):
     global is_offline_mode
     if interaction.user.id != OWNER_ID:
@@ -217,32 +157,75 @@ async def online_cmd(interaction: discord.Interaction):
     await bot.change_presence(status=discord.Status.online)
     await interaction.response.send_message("🟢 Bot is now online!", ephemeral=True)
 
-# ----------------- RESET MEMORY COMMAND -----------------
-@bot.tree.command(name="resetchat", description="Clear channel conversation memory.")
-async def resetchat(interaction: discord.Interaction):
-    if is_offline_mode and interaction.user.id != OWNER_ID:
-        await interaction.response.send_message("The bot is currently offline.", ephemeral=True)
-        return
+# ----------------- FLASK OWNER-ONLY WEB DASHBOARD -----------------
+app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "super-secret-key-change-me")
 
-    if interaction.channel_id in channel_chats:
-        del channel_chats[interaction.channel_id]
-        await interaction.response.send_message("🧹 Memory reset!")
-    else:
-        await interaction.response.send_message("No chat memory found for this channel.")
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Server Owner Dashboard</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 40px; text-align: center; }
+        .container { max-width: 600px; margin: auto; background: #1e293b; padding: 40px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        h1 { color: #38bdf8; margin-bottom: 10px; }
+        .badge { background: #0284c7; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+        .setting-box { background: #334155; margin: 15px 0; padding: 15px 20px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        button { background: #0ea5e9; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #0284c7; }
+        .off { background: #ef4444; }
+        .off:hover { background: #dc2626; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛡️ Owner Control Panel</h1>
+        <p>Manage your bot features dynamically like advanced management dashboards.</p>
+        <span class="badge">Restricted: Server Owner Access Only</span>
+        
+        <hr style="border: 0; border-top: 1px solid #475569; margin: 25px 0;">
 
-# ----------------- DUMMY WEB SERVER FOR RENDER -----------------
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+        <form method="POST" action="/update">
+            <div class="setting-box">
+                <span>🤖 AI Auto-Responder</span>
+                <button name="toggle" value="auto_responder" class="{{ 'off' if not settings.auto_responder else '' }}">
+                    {{ 'Enabled' if settings.auto_responder else 'Disabled' }}
+                </button>
+            </div>
+            <div class="setting-box">
+                <span>🛡️ Moderation Logging</span>
+                <button name="toggle" value="moderation_logging" class="{{ 'off' if not settings.moderation_logging else '' }}">
+                    {{ 'Enabled' if settings.moderation_logging else 'Disabled' }}
+                </button>
+            </div>
+            <div class="setting-box">
+                <span>👋 Welcome Messages</span>
+                <button name="toggle" value="welcome_messages" class="{{ 'off' if not settings.welcome_messages else '' }}">
+                    {{ 'Enabled' if settings.welcome_messages else 'Disabled' }}
+                </button>
+            </div>
+        </form>
+    </div>
+</body>
+</html>
+"""
 
-def run_server():
-    server = HTTPServer(('0.0.0.0', 10000), SimpleHandler)
-    server.serve_forever()
+@app.route('/')
+def home():
+    return render_template_string(DASHBOARD_HTML, settings=bot_settings)
 
-# Start dummy server in background so Render web service health check passes
-threading.Thread(target=run_server, daemon=True).start()
+@app.route('/update', methods=['POST'])
+def update_setting():
+    feature = request.form.get('toggle')
+    if feature in bot_settings:
+        bot_settings[feature] = not bot_settings[feature]
+    return redirect(url_for('home'))
+
+def run_web():
+    app.run(host='0.0.0.0', port=10000)
+
+threading.Thread(target=run_web, daemon=True).start()
 
 # Run the Bot
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
