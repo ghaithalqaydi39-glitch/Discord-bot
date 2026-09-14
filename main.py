@@ -30,7 +30,7 @@ async def chat(interaction: discord.Interaction, prompt: str):
     
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
         )
         # Discord message limit is 2000 characters
@@ -58,7 +58,7 @@ async def on_message(message):
         async with message.channel.typing():
             try:
                 response = gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.6-flash",
                     contents=clean_text,
                 )
                 answer = response.text[:1900]
