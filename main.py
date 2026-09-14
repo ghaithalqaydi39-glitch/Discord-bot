@@ -5,6 +5,8 @@ from discord.ext import commands
 from typing import Literal
 from google import genai
 from groq import Groq
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Setup Discord Bot
 intents = discord.Intents.default()
@@ -227,6 +229,20 @@ async def resetchat(interaction: discord.Interaction):
         await interaction.response.send_message("🧹 Memory reset!")
     else:
         await interaction.response.send_message("No chat memory found for this channel.")
+
+# ----------------- DUMMY WEB SERVER FOR RENDER -----------------
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_server():
+    server = HTTPServer(('0.0.0.0', 10000), SimpleHandler)
+    server.serve_forever()
+
+# Start dummy server in background so Render web service health check passes
+threading.Thread(target=run_server, daemon=True).start()
 
 # Run the Bot
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
