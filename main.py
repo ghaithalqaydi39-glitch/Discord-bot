@@ -2,6 +2,7 @@ import os
 import discord
 from discord import app_commands
 from discord.ext import commands
+from typing import Literal
 from google import genai
 
 # Setup Discord Bot
@@ -9,8 +10,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Set your Discord User ID here (e.g. 123456789012345678)
+# Set your Discord User ID here
 OWNER_ID = int(os.getenv("OWNER_ID", "YOUR_DISCORD_USER_ID_HERE"))
+
+# Target Channel ID for Staff Results
+STAFF_RESULTS_CHANNEL_ID = 1546885221071200276
 
 # Setup Gemini AI Client
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -41,6 +45,69 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
+# ----------------- STAFF RESULT SLASH COMMAND -----------------
+@bot.tree.command(name="staff_result", description="Announce a staff application result.")
+@app_commands.describe(
+    status="Select whether the applicant was accepted or denied",
+    applicant="The user whose application was processed",
+    reason="Optional reason or additional notes for the decision"
+)
+async def staff_result(
+    interaction: discord.Interaction, 
+    status: Literal["accepted", "denied"], 
+    applicant: discord.User,
+    reason: str = "Thank you for taking the time to apply!"
+):
+    if is_offline_mode and interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("The bot is currently offline.", ephemeral=True)
+        return
+
+    # Find the target results channel
+    channel = bot.get_channel(STAFF_RESULTS_CHANNEL_ID)
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(STAFF_RESULTS_CHANNEL_ID)
+        except Exception:
+            await interaction.response.send_message(
+                "❌ Error: Could not find the staff results channel. Ensure the bot is in that server and has access to view the channel.", 
+                ephemeral=True
+            )
+            return
+
+    # Create detailed response based on choice
+    if status == "accepted":
+        embed = discord.Embed(
+            title="🎉 Staff Application Status: ACCEPTED!",
+            description=f"Congratulations {applicant.mention}, your staff application has been **accepted**! Welcome to the team.",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
+        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📌 Next Steps", value="Please await further instructions from senior management regarding role assignment and onboarding.", inline=False)
+        embed.add_field(name="📝 Notes / Reason", value=reason, inline=False)
+        embed.set_thumbnail(url=applicant.display_avatar.url)
+        embed.set_footer(text="Official Staff Application System", icon_url=bot.user.display_avatar.url)
+
+    else:  # status == "denied"
+        embed = discord.Embed(
+            title="❌ Staff Application Status: DENIED",
+            description=f"Hello {applicant.mention}, thank you for your interest in joining our staff team. Unfortunately, your application has been **denied** at this time.",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
+        embed.add_field(name="🛡️ Reviewer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📝 Reason / Feedback", value=reason, inline=False)
+        embed.add_field(name="⏳ Reapplying", value="You may re-apply in future application cycles unless stated otherwise.", inline=False)
+        embed.set_thumbnail(url=applicant.display_avatar.url)
+        embed.set_footer(text="Official Staff Application System", icon_url=bot.user.display_avatar.url)
+
+    # Send the embed to the designated channel
+    try:
+        await channel.send(content=f"{applicant.mention}", embed=embed)
+        await interaction.response.send_message(f"✅ Staff result for {applicant.mention} sent to <#{STAFF_RESULTS_CHANNEL_ID}>!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Failed to send message: {e}", ephemeral=True)
+
 # ----------------- DIRECT MESSAGE SLASH COMMAND -----------------
 @bot.tree.command(name="dm", description="Send a direct message to a specific user.")
 @app_commands.describe(user="The user you want to message", message="The message content to send")
@@ -53,7 +120,7 @@ async def dm_cmd(interaction: discord.Interaction, user: discord.User, message: 
         await user.send(message)
         await interaction.response.send_message(f"✅ Message successfully sent to {user.mention}!", ephemeral=True)
     except discord.Forbidden:
-        await interaction.response.send_message(f"❌ Couldn't send DM to {user.mention}. They may have Direct Messages turned off or blocked the bot.", ephemeral=True)
+        await interaction.response.send_message(f"❌ Couldn't send DM to {user.mention}. They may have Direct Messages turned off.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
 
@@ -67,7 +134,7 @@ async def offline_cmd(interaction: discord.Interaction):
 
     is_offline_mode = True
     await bot.change_presence(status=discord.Status.invisible)
-    await interaction.response.send_message("🤫 Bot is now in offline mode. It will ignore non-owners.", ephemeral=True)
+    await interaction.response.send_message("🤫 Bot is now in offline mode.", ephemeral=True)
 
 @bot.tree.command(name="online", description="Bring the bot back online (Owner only).")
 async def online_cmd(interaction: discord.Interaction):
