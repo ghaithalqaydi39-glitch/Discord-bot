@@ -56,12 +56,12 @@ def ask_ai(channel_id, prompt):
                 del channel_chats[channel_id]
             continue  # Try next Gemini key
 
-    # 2. Try Groq Keys (Using llama-3.3-70b-versatile)
+    # 2. Try Groq Keys (Using openai/gpt-oss-120b as backup model)
     for gr_key in groq_keys:
         try:
             groq_client = Groq(api_key=gr_key)
             completion = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=[
                     {
                         "role": "system", 
