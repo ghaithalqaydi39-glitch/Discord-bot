@@ -17,54 +17,47 @@ OWNER_ID = int(os.getenv("OWNER_ID", "YOUR_DISCORD_USER_ID_HERE"))
 # Target Channel ID for Staff Results
 STAFF_RESULTS_CHANNEL_ID = 1546885221071200276
 
-# Setup Gemini API Client
-gemini_key = os.getenv("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=gemini_key) if gemini_key else None
-
-# Setup Groq API Client (Backup Model: Llama 3.1)
-groq_key = os.getenv("GROQ_API_KEY")
-groq_client = Groq(api_key=groq_key) if groq_key else None
-
 # State variables
 is_offline_mode = False
 channel_chats = {}
 
-def get_chat_session(channel_id):
-    if channel_id not in channel_chats and gemini_client:
-        channel_chats[channel_id] = gemini_client.chats.create(
-            model="gemini-3.6-flash",
-            config={
-                "system_instruction": (
-                    "You are a helpful, friendly Discord AI assistant. "
-                    "You have conversation memory and remember details shared with you in chat."
-                )
-            }
-        )
-    return channel_chats.get(channel_id)
-
 def ask_ai(channel_id, prompt):
     """
-    Tries Gemini first. If Gemini hits a rate limit (429), 
-    it automatically falls back to Groq (Llama 3.1).
+    Tries 2 Gemini keys, then falls back to 2 Groq keys sequentially.
     """
-    # 1. Try Primary AI (Gemini)
-    if gemini_client:
+    last_error = None
+
+    # Collect available keys from environment variables
+    gemini_keys = [k for k in [os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_2")] if k]
+    groq_keys = [k for k in [os.getenv("GROQ_API_KEY"), os.getenv("GROQ_API_KEY_2")] if k]
+
+    # 1. Try Gemini Keys
+    for g_key in gemini_keys:
         try:
-            chat_session = get_chat_session(channel_id)
-            response = chat_session.send_message(prompt)
+            client = genai.Client(api_key=g_key)
+            if channel_id not in channel_chats:
+                channel_chats[channel_id] = client.chats.create(
+                    model="gemini-1.5-flash",
+                    config={
+                        "system_instruction": (
+                            "You are a helpful, friendly Discord AI assistant. "
+                            "You have conversation memory and remember details shared with you in chat."
+                        )
+                    }
+                )
+            response = channel_chats[channel_id].send_message(prompt)
             return response.text
         except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                print("Gemini rate limit hit. Switching to Groq fallback...")
-                # Reset Gemini session for this channel since it failed
-                if channel_id in channel_chats:
-                    del channel_chats[channel_id]
-            else:
-                raise e
+            last_error = e
+            print(f"Gemini key failed: {e}")
+            if channel_id in channel_chats:
+                del channel_chats[channel_id]
+            continue  # Try next Gemini key
 
-    # 2. Try Secondary AI (Groq / Llama 3.1)
-    if groq_client:
+    # 2. Try Groq Keys (Llama 3.1)
+    for gr_key in groq_keys:
         try:
+            groq_client = Groq(api_key=gr_key)
             completion = groq_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
@@ -77,9 +70,11 @@ def ask_ai(channel_id, prompt):
             )
             return completion.choices[0].message.content
         except Exception as e:
-            raise e
+            last_error = e
+            print(f"Groq key failed: {e}")
+            continue  # Try next Groq key
 
-    raise Exception("Both Gemini and Groq API services failed or are unconfigured.")
+    raise Exception(f"All 4 AI keys failed or are unconfigured. Last error: {last_error}")
 
 @bot.event
 async def on_ready():
@@ -105,7 +100,7 @@ async def chat(interaction: discord.Interaction, prompt: str):
         answer = answer_text[:1900]
         await interaction.followup.send(f"**Question:** {prompt}\n\n**Answer:**\n{answer}")
     except Exception as e:
-        await interaction.followup.send("⏳ **Rate Limit Hit:** All available AI services are currently busy. Please wait 1 minute!")
+        await interaction.followup.send(f"❌ **Debug Error:** {e}")
 
 # ----------------- AUTO-REPLY ON @MENTION -----------------
 @bot.event
@@ -129,7 +124,7 @@ async def on_message(message):
                 answer = answer_text[:1900]
                 await message.reply(answer)
             except Exception as e:
-                await message.reply("⏳ **Rate Limit Hit:** All available AI services are currently busy. Please wait 1 minute!")
+                await message.reply(f"❌ **Debug Error:** {e}")
 
     await bot.process_commands(message)
 
@@ -161,7 +156,7 @@ async def staff_result(
     if status == "accepted":
         embed = discord.Embed(
             title="🎉 Staff Application Status: ACCEPTED!",
-            description=f"Congratulations {applicant.mention}, your application has been **accepted**!",
+            description=f"Congratulations {applicant.mention}, your application has **accepted**! Welcome to the team.",
             color=discord.Color.green()
         )
         embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
