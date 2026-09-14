@@ -31,13 +31,13 @@ def ask_ai(channel_id, prompt):
     gemini_keys = [k for k in [os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_2")] if k]
     groq_keys = [k for k in [os.getenv("GROQ_API_KEY"), os.getenv("GROQ_API_KEY_2")] if k]
 
-    # 1. Try Gemini Keys
+    # 1. Try Gemini Keys (Gemini 2.0 Flash)
     for g_key in gemini_keys:
         try:
             client = genai.Client(api_key=g_key)
             if channel_id not in channel_chats:
                 channel_chats[channel_id] = client.chats.create(
-                    model="gemini-1.5-flash",
+                    model="gemini-2.0-flash",
                     config={
                         "system_instruction": (
                             "You are a helpful, friendly Discord AI assistant. "
@@ -54,12 +54,12 @@ def ask_ai(channel_id, prompt):
                 del channel_chats[channel_id]
             continue  # Try next Gemini key
 
-    # 2. Try Groq Keys (Llama 3.1)
+    # 2. Try Groq Keys (Using llama-3.3-70b-versatile)
     for gr_key in groq_keys:
         try:
             groq_client = Groq(api_key=gr_key)
             completion = groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model="llama-3.3-70b-versatile",
                 messages=[
                     {
                         "role": "system", 
@@ -156,7 +156,7 @@ async def staff_result(
     if status == "accepted":
         embed = discord.Embed(
             title="🎉 Staff Application Status: ACCEPTED!",
-            description=f"Congratulations {applicant.mention}, your application has **accepted**! Welcome to the team.",
+            description=f"Congratulations {applicant.mention}, your application has been **accepted**! Welcome to the team.",
             color=discord.Color.green()
         )
         embed.add_field(name="👤 Applicant", value=f"{applicant.mention} ({applicant.name})", inline=True)
